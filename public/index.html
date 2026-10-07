@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VideoMaker · 网页动画导出</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/">V<span>VideoMaker</span></a
+      ><span class="badge">本地逐帧渲染 · 60 FPS</span>
+    </header>
+    <main>
+      <section class="intro">
+        <div class="eyebrow">把网页动画，变成视频。</div>
+        <h1>每一帧，都按你的时间。</h1>
+        <p>输入网页地址，设置画面尺寸。导出清晰、流畅的无音频 MP4。</p>
+      </section>
+      <div id="notice" role="status" aria-live="polite" hidden></div>
+      <div class="workspace">
+        <section class="panel settings">
+          <div class="panel-title">
+            <h2>导出设置</h2>
+            <span>01 / 配置</span>
+          </div>
+          <form id="export-form">
+            <label for="url">目标网页地址</label>
+            <div class="url-row">
+              <input
+                id="url"
+                type="url"
+                required
+                placeholder="http://localhost:5173"
+              /><button id="inspect" type="button" class="secondary">
+                读取信息
+              </button>
+            </div>
+            <p class="hint">
+              网页需接入逐帧接口。<button
+                id="use-demo"
+                type="button"
+                class="text-button"
+              >
+                使用内置示例
+              </button>
+              ·
+              <a href="/protocol" target="_blank" rel="noopener"
+                >查看接口标准 ↗</a
+              >
+            </p>
+            <div id="manifest" class="manifest" hidden></div>
+            <fieldset>
+              <legend>输出尺寸</legend>
+              <div class="presets">
+                <button
+                  class="preset selected"
+                  data-width="1920"
+                  data-height="1080"
+                  type="button"
+                >
+                  1080p</button
+                ><button
+                  class="preset"
+                  data-width="3840"
+                  data-height="2160"
+                  type="button"
+                >
+                  4K</button
+                ><button class="preset" data-custom type="button">
+                  自定义
+                </button>
+              </div>
+              <div class="fields">
+                <div>
+                  <label for="width">宽度 / px</label
+                  ><input
+                    id="width"
+                    type="number"
+                    value="1920"
+                    min="16"
+                    max="8192"
+                    step="2"
+                    required
+                  />
+                </div>
+                <div>
+                  <label for="height">高度 / px</label
+                  ><input
+                    id="height"
+                    type="number"
+                    value="1080"
+                    min="16"
+                    max="8192"
+                    step="2"
+                    required
+                  />
+                </div>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>时间范围 / 秒</legend>
+              <div class="fields">
+                <div>
+                  <label for="start">开始</label
+                  ><input
+                    id="start"
+                    type="number"
+                    value="0"
+                    min="0"
+                    step="any"
+                    required
+                  />
+                </div>
+                <div>
+                  <label for="end">结束</label
+                  ><input
+                    id="end"
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="留空：动画结束"
+                  />
+                </div>
+              </div>
+              <p class="hint">起点包含，终点不包含；按 60 fps 的整帧采样。</p>
+            </fieldset>
+            <details>
+              <summary>高级设置 <span>布局 · 画质 · 随机种子</span></summary>
+              <div class="fields">
+                <div>
+                  <label for="layout-width">布局宽度 / CSS px</label
+                  ><input
+                    id="layout-width"
+                    type="number"
+                    value="1920"
+                    min="16"
+                    max="8192"
+                    required
+                  />
+                </div>
+                <div>
+                  <label for="layout-height">布局高度 / CSS px</label
+                  ><input
+                    id="layout-height"
+                    type="number"
+                    value="1080"
+                    min="16"
+                    max="8192"
+                    required
+                  />
+                </div>
+              </div>
+              <p class="hint">
+                布局与输出须保持相同宽高比。1920×1080 布局可以直接导出 4K。
+              </p>
+              <div class="fields">
+                <div>
+                  <label for="crf">CRF 画质</label
+                  ><input
+                    id="crf"
+                    type="number"
+                    min="0"
+                    max="51"
+                    value="18"
+                    required
+                  />
+                </div>
+                <div>
+                  <label for="preset">编码速度</label
+                  ><select id="preset">
+                    <option value="fast">快速</option>
+                    <option value="medium" selected>标准</option>
+                    <option value="slow">精细</option>
+                  </select>
+                </div>
+              </div>
+              <p class="hint">CRF 越小，画质越高、文件越大；18 为默认值。</p>
+              <div class="fields">
+                <div>
+                  <label for="seed">随机种子</label
+                  ><input
+                    id="seed"
+                    type="number"
+                    min="0"
+                    max="4294967295"
+                    value="12345"
+                    required
+                  />
+                </div>
+                <div>
+                  <label for="timeout">单步超时 / 秒</label
+                  ><input
+                    id="timeout"
+                    type="number"
+                    min="1"
+                    max="300"
+                    value="30"
+                    required
+                  />
+                </div>
+              </div>
+            </details>
+            <button id="submit" class="primary" type="submit">
+              开始导出 <span>↗</span>
+            </button>
+          </form>
+        </section>
+        <section class="panel tasks">
+          <div class="panel-title">
+            <h2>导出任务</h2>
+            <span>02 / 进度</span>
+          </div>
+          <div id="jobs" aria-live="polite">
+            <div class="empty">
+              <div class="empty-icon">▤</div>
+              <h3>准备好你的下一段动画</h3>
+              <p>创建任务后，这里会显示进度和视频。</p>
+              <div class="pipeline">
+                网页渲染 <i>→</i> PNG 序列 <i>→</i> MP4
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <footer>
+        <span id="health">正在检查编码环境…</span
+        ><span>PNG 序列会保留，可重新编码。</span>
+      </footer>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

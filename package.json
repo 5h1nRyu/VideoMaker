@@ -1,0 +1,28 @@
+{
+  "name": "videomaker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地网页动画逐帧导出工具",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "dev": "node --watch src/server.ts",
+    "check": "tsc --noEmit",
+    "test": "node --test test/unit.test.ts",
+    "test:integration": "node --test test/integration.test.ts",
+    "install:browser": "playwright install chromium",
+    "format": "prettier --write src test public example docs README.md package.json tsconfig.json .github/workflows/check.yml",
+    "format:check": "prettier --check src test public example docs README.md package.json tsconfig.json .github/workflows/check.yml"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "prettier": "3.8.3",
+    "typescript": "7.0.2"
+  }
+}

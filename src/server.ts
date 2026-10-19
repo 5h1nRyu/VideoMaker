@@ -97,7 +97,7 @@ export async function createApp(
         return;
       }
       if (
-        req.method === "POST" &&
+        ["POST", "DELETE"].includes(req.method ?? "") &&
         req.headers.origin &&
         req.headers.origin !== `http://${host}`
       ) {
@@ -113,6 +113,11 @@ export async function createApp(
       }
       if (req.method === "GET" && route === "/api/jobs") {
         json(res, 200, jobs.list());
+        return;
+      }
+      if (req.method === "DELETE" && route === "/api/jobs") {
+        await jobs.clear();
+        json(res, 200, { ok: true });
         return;
       }
       if (req.method === "POST" && route === "/api/jobs") {
@@ -151,6 +156,11 @@ export async function createApp(
         );
       if (match) {
         const [, id, action] = match;
+        if (req.method === "DELETE" && !action) {
+          await jobs.remove(id);
+          json(res, 200, { ok: true });
+          return;
+        }
         const job = jobs.get(id);
         if (req.method === "GET" && !action) {
           json(res, 200, job);

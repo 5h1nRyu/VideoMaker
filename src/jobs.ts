@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { parseConfig } from "./config.ts";
 import type { ExportConfig } from "./config.ts";
@@ -14,11 +21,61 @@ export class Jobs {
   active?: { job: Job; controller: AbortController };
   running?: Promise<void>;
   stopping = false;
+  private mutating = false;
   constructor(root: string) {
-    this.root = root;
+    this.root = path.resolve(root);
   }
   directory(id: string) {
-    return path.join(this.root, id);
+    if (!/^[\da-f-]{36}$/.test(id)) throw new Error("任务 ID 不合法");
+    return this.childPath(id);
+  }
+  private childPath(name: string) {
+    const target = path.resolve(this.root, name);
+    if (path.dirname(target) !== this.root)
+      throw new Error("只能删除导出目录内的内容");
+    return target;
+  }
+  private async mutate<T>(action: () => Promise<T>): Promise<T> {
+    if (this.mutating) throw new Error("正在处理任务操作，请稍后再试");
+    this.mutating = true;
+    try {
+      return await action();
+    } finally {
+      this.mutating = false;
+    }
+  }
+  async remove(id: string) {
+    return this.mutate(async () => {
+      const job = this.get(id);
+      if (!terminal.has(job.stage) || this.active?.job.id === id)
+        throw new Error("任务仍在运行或排队，请先取消并等待结束后再删除");
+      await rm(this.directory(id), {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+      });
+      this.items.delete(id);
+    });
+  }
+  async clear() {
+    return this.mutate(async () => {
+      if (
+        this.active ||
+        this.queue.length ||
+        this.list().some((job) => !terminal.has(job.stage))
+      )
+        throw new Error("有任务正在运行或排队，请先取消并等待结束后再清空");
+      // 逐个删除直属条目，保留导出目录本身；也清理未能加载为任务的文件。
+      for (const name of await readdir(this.root)) {
+        await rm(this.childPath(name), {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+        });
+        this.items.delete(name);
+      }
+      this.items.clear();
+    });
   }
   async save(job: Job) {
     job.updatedAt = new Date().toISOString();
@@ -65,57 +122,63 @@ export class Jobs {
     );
   }
   async create(config: ExportConfig) {
-    if (this.stopping || this.queue.length >= 5)
-      throw new Error("任务队列已满或服务正在退出");
-    const job: Job = {
-      id: randomUUID(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      config,
-      stage: "queued",
-      completedFrames: 0,
-      warmedFrames: 0,
-      encodedFrames: 0,
-    };
-    await this.save(job);
-    this.items.set(job.id, job);
-    this.queue.push({ job, encodeOnly: false });
-    this.kick();
-    return job;
+    return this.mutate(async () => {
+      if (this.stopping || this.queue.length >= 5)
+        throw new Error("任务队列已满或服务正在退出");
+      const job: Job = {
+        id: randomUUID(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        config,
+        stage: "queued",
+        completedFrames: 0,
+        warmedFrames: 0,
+        encodedFrames: 0,
+      };
+      await this.save(job);
+      this.items.set(job.id, job);
+      this.queue.push({ job, encodeOnly: false });
+      this.kick();
+      return job;
+    });
   }
   async reencode(id: string, quality: unknown) {
-    const job = this.get(id);
-    if (!terminal.has(job.stage)) throw new Error("任务仍在运行或排队");
-    if (!job.plan || job.completedFrames !== job.plan.frameCount)
-      throw new Error("PNG 序列尚未完整，无法重新编码");
-    if (this.stopping || this.queue.length >= 5)
-      throw new Error("任务队列已满或服务正在退出");
-    if (!quality || typeof quality !== "object")
-      throw new Error("编码参数格式错误");
-    const q = quality as Record<string, unknown>;
-    job.config = parseConfig({
-      ...job.config,
-      crf: q.crf ?? job.config.crf,
-      preset: q.preset ?? job.config.preset,
+    return this.mutate(async () => {
+      const job = this.get(id);
+      if (!terminal.has(job.stage)) throw new Error("任务仍在运行或排队");
+      if (!job.plan || job.completedFrames !== job.plan.frameCount)
+        throw new Error("PNG 序列尚未完整，无法重新编码");
+      if (this.stopping || this.queue.length >= 5)
+        throw new Error("任务队列已满或服务正在退出");
+      if (!quality || typeof quality !== "object")
+        throw new Error("编码参数格式错误");
+      const q = quality as Record<string, unknown>;
+      job.config = parseConfig({
+        ...job.config,
+        crf: q.crf ?? job.config.crf,
+        preset: q.preset ?? job.config.preset,
+      });
+      job.error = undefined;
+      job.stage = "queued";
+      job.video = undefined;
+      job.encodedFrames = 0;
+      await this.save(job);
+      this.queue.push({ job, encodeOnly: true });
+      this.kick();
+      return job;
     });
-    job.error = undefined;
-    job.stage = "queued";
-    job.video = undefined;
-    job.encodedFrames = 0;
-    await this.save(job);
-    this.queue.push({ job, encodeOnly: true });
-    this.kick();
-    return job;
   }
   async cancel(id: string) {
-    const job = this.get(id);
-    if (this.active?.job.id === id) this.active.controller.abort();
-    else if (job.stage === "queued") {
-      this.queue = this.queue.filter((item) => item.job.id !== id);
-      job.stage = "cancelled";
-      await this.save(job);
-    }
-    return job;
+    return this.mutate(async () => {
+      const job = this.get(id);
+      if (this.active?.job.id === id) this.active.controller.abort();
+      else if (job.stage === "queued") {
+        this.queue = this.queue.filter((item) => item.job.id !== id);
+        job.stage = "cancelled";
+        await this.save(job);
+      }
+      return job;
+    });
   }
   kick() {
     if (this.running || this.stopping || !this.queue.length) return;

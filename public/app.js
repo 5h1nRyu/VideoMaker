@@ -14,20 +14,23 @@ const stages = {
 };
 let outputDirectory = "",
   lastSnapshot = "",
-  refreshing = false;
+  refreshing = false,
+  refreshAgain = false,
+  clearing = false;
+const emptyState = $("jobs").firstElementChild.cloneNode(true);
 const terminal = (stage) =>
   ["completed", "failed", "cancelled"].includes(stage);
 function notice(message) {
   $("notice").hidden = !message;
   $("notice").textContent = message;
 }
-async function api(url, data) {
+async function api(url, data, method = "POST") {
   const response = await fetch(
     url,
     data === undefined
-      ? {}
+      ? { method: method === "DELETE" ? "DELETE" : "GET" }
       : {
-          method: "POST",
+          method,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         },
@@ -150,6 +153,19 @@ function card(job) {
   if (!terminal(job.stage))
     actions.append(button("取消任务", () => api(base + "/cancel", {})));
   actions.append(link("任务信息", base + "/job.json"));
+  if (terminal(job.stage)) {
+    const remove = button("删除记录及文件", async () => {
+      if (
+        !confirm(
+          "确定删除这条导出记录及其全部文件（MP4、PNG 和任务信息）？此操作无法撤销。",
+        )
+      )
+        return;
+      await api(base, undefined, "DELETE");
+    });
+    remove.classList.add("danger");
+    actions.append(remove);
+  }
   node.append(actions);
   if (outputDirectory)
     node.append(
@@ -165,16 +181,29 @@ function card(job) {
   return node;
 }
 async function refresh(force = false) {
-  if (refreshing) return;
+  if (refreshing) {
+    refreshAgain ||= force;
+    return;
+  }
   refreshing = true;
   try {
     const jobs = await api("/api/jobs"),
       snapshot = JSON.stringify(jobs);
+    $("clear-exports").disabled =
+      clearing || jobs.some((job) => !terminal(job.stage));
+    $("clear-exports").title = jobs.some((job) => !terminal(job.stage))
+      ? "请先取消正在运行或排队的任务并等待结束"
+      : "删除导出目录中的全部文件和历史记录";
     if (force || snapshot !== lastSnapshot) {
       lastSnapshot = snapshot;
+      const container = $("jobs");
+      const ids = new Set(jobs.map((job) => job.id));
+      for (const old of container.querySelectorAll("[data-job]")) {
+        if (!ids.has(old.dataset.job)) old.remove();
+      }
+      if (!jobs.length) container.replaceChildren(emptyState.cloneNode(true));
       if (jobs.length) {
         // 更新变化的任务，避免每次轮询重建正在播放的视频。
-        const container = $("jobs");
         if (container.querySelector(".empty")) container.replaceChildren();
         for (let index = 0; index < jobs.length; index++) {
           const job = jobs[index],
@@ -192,8 +221,33 @@ async function refresh(force = false) {
     notice(e.message);
   } finally {
     refreshing = false;
+    if (refreshAgain) {
+      refreshAgain = false;
+      void refresh(true);
+    }
   }
 }
+$("clear-exports").addEventListener("click", async () => {
+  if (clearing) return;
+  if (
+    !confirm(
+      `确定清空导出目录中的全部文件和历史记录？\n目录：${outputDirectory || "exports"}\n包括所有 MP4、PNG 和任务信息，此操作无法撤销。`,
+    )
+  )
+    return;
+  clearing = true;
+  $("clear-exports").disabled = true;
+  try {
+    await api("/api/jobs", undefined, "DELETE");
+    notice("");
+  } catch (e) {
+    notice(e.message);
+  } finally {
+    clearing = false;
+    await refresh(true);
+  }
+});
+
 document.querySelectorAll(".preset").forEach((node) =>
   node.addEventListener("click", () => {
     document

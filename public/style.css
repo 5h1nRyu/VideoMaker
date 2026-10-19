@@ -411,3 +411,19 @@ footer {
     transition: none !important;
   }
 }
+
+.panel-title {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+button.danger,
+.job-actions button.danger {
+  color: var(--danger);
+  background: #422b2b;
+}
+button.danger:hover:not(:disabled) {
+  background: #593333;
+}
+#clear-exports {
+  font-size: 12px;
+}

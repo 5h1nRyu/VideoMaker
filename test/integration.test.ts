@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -263,6 +263,65 @@ test(
           ).status,
           403,
         );
+      });
+      await t.test("界面删除确认、单条删除、全部清空和空状态", async () => {
+        const target = await openTarget(cfg());
+        try {
+          const page = target.page;
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(error.message));
+          await page.goto(base);
+          const remove = page.getByRole("button", {
+            name: "删除记录及文件",
+            exact: true,
+          });
+          await remove.first().waitFor();
+          const count = await remove.count();
+          const id = await remove
+            .first()
+            .evaluate((node) =>
+              node.closest("[data-job]")!.getAttribute("data-job"),
+            );
+          page.once("dialog", (dialog) => dialog.dismiss());
+          await remove.first().click();
+          assert.equal(app.jobs.list().length, count);
+          const deleted = page.waitForResponse(
+            (response) =>
+              response.request().method() === "DELETE" &&
+              response.url().endsWith("/" + id),
+          );
+          page.once("dialog", (dialog) => dialog.accept());
+          await remove.first().click();
+          assert.equal((await deleted).status(), 200);
+          await page
+            .locator('[data-job="' + id + '"]')
+            .waitFor({ state: "detached" });
+          assert.equal(app.jobs.list().length, count - 1);
+          assert.equal((await readdir(root)).includes(id!), false);
+          const clear = page.getByRole("button", {
+            name: "清空导出文件",
+            exact: true,
+          });
+          page.once("dialog", (dialog) => dialog.dismiss());
+          await clear.click();
+          assert.equal(app.jobs.list().length, count - 1);
+          const cleared = page.waitForResponse(
+            (response) =>
+              response.request().method() === "DELETE" &&
+              response.url().endsWith("/api/jobs"),
+          );
+          page.once("dialog", (dialog) => dialog.accept());
+          await clear.click();
+          assert.equal((await cleared).status(), 200);
+          await page.locator("#jobs .empty").waitFor();
+          assert.deepEqual(await readdir(root), []);
+          await page.reload();
+          await page.locator("#jobs .empty").waitFor();
+          assert.equal(await page.locator("#jobs [data-job]").count(), 0);
+          assert.deepEqual(errors, []);
+        } finally {
+          await target.close();
+        }
       });
     } finally {
       await app.close();

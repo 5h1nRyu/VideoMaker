@@ -1,7 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
+import { once } from "node:events";
+import { createApp } from "../src/server.ts";
 import path from "node:path";
 import {
   frameAt,
@@ -172,5 +182,170 @@ test("服务重启加载任务并标记中断任务，保留 PNG", async () => {
     await restored.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function savedJob(id: string, stage: Job["stage"] = "completed"): Job {
+  return {
+    id,
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-01",
+    config: config(),
+    stage,
+    completedFrames: 0,
+    warmedFrames: 0,
+    encodedFrames: 0,
+  };
+}
+test("删除单条任务和清空全部导出文件，重启后不会恢复且不越过目录", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "videomaker-cleanup-"));
+  const root = path.join(temp, "exports");
+  const outside = path.join(temp, "outside");
+  const ids = [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+  ];
+  try {
+    const jobs = new Jobs(root);
+    await jobs.init();
+    for (const id of ids) {
+      const job = savedJob(id);
+      await jobs.save(job);
+      jobs.items.set(id, job);
+      await mkdir(path.join(root, id, "frames"));
+      await writeFile(path.join(root, id, "frames", frameFilename(0)), "PNG");
+      await writeFile(path.join(root, id, "video.mp4"), "MP4");
+    }
+    await jobs.remove(ids[0]);
+    assert.throws(() => jobs.get(ids[0]), /不存在/);
+    assert.deepEqual(await readdir(root), [ids[1]]);
+    const restored = new Jobs(root);
+    await restored.init();
+    assert.deepEqual(
+      restored.list().map((job) => job.id),
+      [ids[1]],
+    );
+    assert.throws(() => jobs.directory("../outside"), /ID/);
+    await mkdir(path.join(root, "orphan", "nested"), { recursive: true });
+    await writeFile(
+      path.join(root, "orphan", "nested", "partial.png"),
+      "partial",
+    );
+    await writeFile(path.join(root, "loose.txt"), "loose");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "keep.txt"), "keep");
+    // 清理目录链接本身，不得递归删除链接指向的外部文件。
+    await symlink(
+      outside,
+      path.join(root, "linked"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await jobs.clear();
+    assert.deepEqual(await readdir(root), []);
+    assert.deepEqual(jobs.list(), []);
+    assert.equal(
+      await readFile(path.join(outside, "keep.txt"), "utf8"),
+      "keep",
+    );
+    const empty = new Jobs(root);
+    await empty.init();
+    assert.deepEqual(empty.list(), []);
+    await jobs.clear();
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+test("清理保护运行中、排队中和正在保存的任务", async () => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "videomaker-cleanup-guard-"),
+  );
+  const id = "11111111-1111-4111-8111-111111111111";
+  const jobs = new Jobs(root);
+  try {
+    await jobs.init();
+    const job = savedJob(id, "queued");
+    jobs.items.set(id, job);
+    await jobs.save(job);
+    await assert.rejects(jobs.remove(id), /运行或排队/);
+    await assert.rejects(jobs.clear(), /运行或排队/);
+    job.stage = "completed";
+    jobs.active = { job, controller: new AbortController() };
+    await assert.rejects(jobs.remove(id), /运行或排队/);
+    await assert.rejects(jobs.clear(), /运行或排队/);
+    jobs.active = undefined;
+    jobs.queue.push({ job, encodeOnly: false });
+    await assert.rejects(jobs.clear(), /运行或排队/);
+    jobs.queue = [];
+    assert.equal(
+      await readFile(path.join(root, id, "job.json"), "utf8")
+        .then(JSON.parse)
+        .then((j) => j.id),
+      id,
+    );
+    const save = jobs.save.bind(jobs);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    jobs.save = async (created) => {
+      await pending;
+      await save(created);
+    };
+    jobs.kick = () => {};
+    const creating = jobs.create(config());
+    try {
+      await assert.rejects(jobs.clear(), /正在处理/);
+      await assert.rejects(jobs.remove(id), /正在处理/);
+    } finally {
+      release();
+      await creating;
+    }
+  } finally {
+    await jobs.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("删除接口同步文件与记录，并拒绝跨站 DELETE 请求", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "videomaker-cleanup-api-"));
+  const app = await createApp(root);
+  app.server.listen(0, "127.0.0.1");
+  await once(app.server, "listening");
+  const base =
+    "http://127.0.0.1:" + (app.server.address() as { port: number }).port;
+  const id = "11111111-1111-4111-8111-111111111111";
+  const job = savedJob(id);
+  try {
+    await app.jobs.save(job);
+    app.jobs.items.set(id, job);
+    for (const route of ["/api/jobs", "/api/jobs/" + id]) {
+      const response = await fetch(base + route, {
+        method: "DELETE",
+        headers: { Origin: "https://foreign.example" },
+      });
+      assert.equal(response.status, 403);
+      assert.equal(app.jobs.list().length, 1);
+    }
+    job.stage = "rendering";
+    for (const route of ["/api/jobs", "/api/jobs/" + id]) {
+      const response = await fetch(base + route, { method: "DELETE" });
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /运行或排队/);
+    }
+    job.stage = "completed";
+    assert.equal(
+      (await fetch(base + "/api/jobs/" + id, { method: "DELETE" })).status,
+      200,
+    );
+    assert.deepEqual(await fetch(base + "/api/jobs").then((r) => r.json()), []);
+    assert.deepEqual(await readdir(root), []);
+    await writeFile(path.join(root, "untracked.txt"), "orphan");
+    assert.equal(
+      (await fetch(base + "/api/jobs", { method: "DELETE" })).status,
+      200,
+    );
+    assert.deepEqual(await readdir(root), []);
+  } finally {
+    await app.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
